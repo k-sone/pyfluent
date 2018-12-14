@@ -16,6 +16,7 @@
 import sys
 import time
 import socket
+import select
 from collections import deque
 
 import msgpack
@@ -68,12 +69,30 @@ class FluentSender(object):
         sock.connect((self.host, self.port))
         return sock
 
+    def _established_socket(self, sock):
+        try:
+            rlist, wlist, _ = select.select([sock], [sock], [], 0.0)
+            if len(rlist) != 0 and len(sock.recv(1024)) <= 0:
+                # socket closed on server side
+                return False
+        except socket.error:
+                return False
+        return len(wlist) > 0
+
     def send(self, data, tag=None, timestamp=None):
-        sock = self.socket
         packed = self.serialize(data, tag, timestamp)
-        if not sock:
-            self._queue.append(packed)
-            return
+        for i in range(2):
+            sock = self.socket
+            if not sock:
+                # failed connect
+                self._queue.append(packed)
+                return
+            if not self._established_socket(sock):
+                self.close()
+                # reconnect 1st time only
+                if i != 0:
+                    self._queue.append(packed)
+                    return
         try:
             while len(self._queue):
                 sock.sendall(self._queue[0])
